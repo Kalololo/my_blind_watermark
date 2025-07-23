@@ -10,6 +10,26 @@ import cv2
 from .bwm_core import WaterMarkCore
 from .version import bw_notes
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    # 如果没有tqdm，创建一个简单的进度条替代
+    class tqdm:
+        def __init__(self, total=None, **kwargs):
+            self.total = total
+            self.count = 0
+        
+        def update(self, n=1):
+            self.count += n
+            if self.total:
+                print(f"\r进度: {self.count}/{self.total} ({self.count/self.total*100:.1f}%)", end="")
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, *args):
+            print()
+
 
 class WaterMark:
     def __init__(self, password_wm=1, password_img=1, block_shape=(4, 4), mode='common', processes=None):
@@ -74,6 +94,89 @@ class WaterMark:
                 cv2.imwrite(filename=filename, img=embed_img)
         return embed_img
 
+    def embed_video(self, wm_path, video_path, output_path, compression_ratio=None):
+        """
+        在视频中嵌入水印
+        
+        :param wm_path: str
+            水印图片路径
+        :param video_path: str
+            输入视频路径
+        :param output_path: str
+            输出视频路径
+        :param compression_ratio: int or None
+            压缩比例，None表示不压缩
+        :return: None
+        """
+        # 读取视频
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"无法打开视频文件: {video_path}")
+        
+        # 获取视频属性
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_size = (width, height)
+        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # 读取水印
+        self.read_wm(wm_path, mode='img')
+        
+        # 创建视频写入器
+        if compression_ratio is not None:
+            # 根据文件扩展名设置压缩参数
+            if output_path.endswith('.mp4'):
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            elif output_path.endswith('.avi'):
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            else:
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        
+        out = cv2.VideoWriter(output_path, fourcc, fps, frame_size)
+        if not out.isOpened():
+            raise ValueError(f"无法创建输出视频文件: {output_path}")
+        
+        # 处理每一帧
+        count = 0
+        with tqdm(total=total_frames, desc="嵌入视频水印") as pbar:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    count += 1
+                    
+                    # 将帧转换为float32类型进行处理
+                    frame_float = frame.astype(np.float32)
+                    
+                    # 读取当前帧到水印核心
+                    self.bwm_core.read_img_arr(img=frame_float)
+                    
+                    # 嵌入水印
+                    wmed_frame = self.bwm_core.embed()
+                    
+                    # 确保像素值在有效范围内
+                    wmed_frame = np.clip(wmed_frame, a_min=0, a_max=255)
+                    wmed_frame = np.around(wmed_frame).astype(np.uint8)
+                    
+                    # 写入输出视频
+                    out.write(wmed_frame)
+                    
+                    pbar.update(1)
+                    
+                    # 检查是否按下q键退出
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                else:
+                    break
+        
+        # 释放资源
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
+        
+        print(f"视频水印嵌入完成！输出文件: {output_path}")
+
     def extract_decrypt(self, wm_avg):
         wm_index = np.arange(self.wm_size)
         np.random.RandomState(self.password_wm).shuffle(wm_index)
@@ -105,4 +208,79 @@ class WaterMark:
             byte = ''.join(str((i >= 0.5) * 1) for i in wm)
             wm = bytes.fromhex(hex(int(byte, base=2))[2:]).decode('utf-8', errors='replace')
 
+        return wm
+
+    def extract_video(self, video_path, wm_shape, out_wm_name=None, mode='img', sample_frames=10):
+        """
+        从视频中提取水印
+        
+        :param video_path: str
+            输入视频路径
+        :param wm_shape: tuple
+            水印形状 (height, width)
+        :param out_wm_name: str
+            输出水印文件名
+        :param mode: str
+            输出模式 ('img', 'str', 'bit')
+        :param sample_frames: int
+            采样帧数，用于提取水印
+        :return: 提取的水印
+        """
+        # 读取视频
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"无法打开视频文件: {video_path}")
+        
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # 计算采样间隔
+        if sample_frames >= total_frames:
+            sample_frames = total_frames
+            frame_interval = 1
+        else:
+            frame_interval = total_frames // sample_frames
+        
+        # 存储所有提取的水印
+        extracted_wms = []
+        
+        with tqdm(total=sample_frames, desc="提取视频水印") as pbar:
+            frame_count = 0
+            sample_count = 0
+            
+            while cap.isOpened() and sample_count < sample_frames:
+                ret, frame = cap.read()
+                if ret:
+                    frame_count += 1
+                    
+                    # 按间隔采样帧
+                    if frame_count % frame_interval == 0:
+                        # 提取当前帧的水印
+                        wm_avg = self.bwm_core.extract(img=frame, wm_shape=wm_shape)
+                        extracted_wms.append(wm_avg)
+                        sample_count += 1
+                        pbar.update(1)
+                else:
+                    break
+        
+        cap.release()
+        
+        if not extracted_wms:
+            raise ValueError("未能从视频中提取到水印")
+        
+        # 对所有提取的水印求平均
+        avg_wm = np.mean(extracted_wms, axis=0)
+        
+        # 解密水印
+        wm = self.extract_decrypt(wm_avg=avg_wm)
+        
+        # 转化为指定格式
+        if mode == 'img':
+            wm = 255 * wm.reshape(wm_shape[0], wm_shape[1])
+            if out_wm_name:
+                cv2.imwrite(out_wm_name, wm)
+        elif mode == 'str':
+            byte = ''.join(str((i >= 0.5) * 1) for i in wm)
+            wm = bytes.fromhex(hex(int(byte, base=2))[2:]).decode('utf-8', errors='replace')
+        
+        print(f"视频水印提取完成！")
         return wm
