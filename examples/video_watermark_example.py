@@ -22,7 +22,7 @@ def main():
     
     # 创建示例文件
     watermark_path = "wm.png"
-    video_path = "input.mp4"
+    video_path = "output.mp4"
     
     # 输出文件路径
     output_video_path = "output_video_with_watermark.mp4"
@@ -38,7 +38,8 @@ def main():
             wm_path=watermark_path,
             video_path=video_path,
             output_path=output_video_path,
-            compression_ratio=95  # 设置压缩质量
+            compression_ratio=95,  # 设置压缩质量
+            preserve_codec=True    # 保持原始编码格式（H.264）
         )
         
         # 获取实际水印尺寸

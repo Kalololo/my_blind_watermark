@@ -94,7 +94,7 @@ class WaterMark:
                 cv2.imwrite(filename=filename, img=embed_img)
         return embed_img
 
-    def embed_video(self, wm_path, video_path, output_path, compression_ratio=None):
+    def embed_video(self, wm_path, video_path, output_path, compression_ratio=None, preserve_codec=True):
         """
         在视频中嵌入水印
         
@@ -106,6 +106,8 @@ class WaterMark:
             输出视频路径
         :param compression_ratio: int or None
             压缩比例，None表示不压缩
+        :param preserve_codec: bool
+            是否保持原始编码格式，默认为True
         :return: None
         """
         # 读取视频
@@ -125,16 +127,42 @@ class WaterMark:
         self.read_wm(wm_path, mode='img')
         
         # 创建视频写入器
-        if compression_ratio is not None:
-            # 根据文件扩展名设置压缩参数
+        # 保持原始编码格式，避免编码改变
+        if preserve_codec:
+            # 保持原始编码格式
             if output_path.endswith('.mp4'):
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                # 检查原始编码，如果是H.264则保持H.264
+                fourcc_str = cv2.VideoWriter_fourcc(*'H264')
+                # 尝试使用H.264编码器
+                try:
+                    out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
+                    if not out.isOpened():
+                        # 如果H.264不可用，尝试avc1
+                        fourcc_str = cv2.VideoWriter_fourcc(*'avc1')
+                        out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
+                        if not out.isOpened():
+                            # 如果都不可用，使用mp4v
+                            fourcc_str = cv2.VideoWriter_fourcc(*'mp4v')
+                            out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
+                except:
+                    # 如果出现异常，使用mp4v
+                    fourcc_str = cv2.VideoWriter_fourcc(*'mp4v')
+                    out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
             elif output_path.endswith('.avi'):
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                fourcc_str = cv2.VideoWriter_fourcc(*'XVID')
+                out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
             else:
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
-        out = cv2.VideoWriter(output_path, fourcc, fps, frame_size)
+                fourcc_str = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
+        else:
+            # 不保持原始编码，使用默认设置
+            if output_path.endswith('.mp4'):
+                fourcc_str = cv2.VideoWriter_fourcc(*'mp4v')
+            elif output_path.endswith('.avi'):
+                fourcc_str = cv2.VideoWriter_fourcc(*'XVID')
+            else:
+                fourcc_str = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc_str, fps, frame_size)
         if not out.isOpened():
             raise ValueError(f"无法创建输出视频文件: {output_path}")
         
